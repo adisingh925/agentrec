@@ -1,0 +1,61 @@
+name: uptime
+
+# External uptime monitor for the hosted control plane. Runs on GitHub's runners
+# (off-VM), so it detects VM/network outages as well as a crashed service. Probes the
+# PUBLIC endpoints only — no secrets required for the check itself. On sustained failure
+# the job fails, which triggers GitHub's workflow-failure notification to the repo owner;
+# set an ALERT_WEBHOOK repo secret (Slack/Discord-compatible) for a push alert too.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 minutes (GitHub's minimum granularity)
+  workflow_dispatch: {}
+
+concurrency:
+  group: uptime
+  cancel-in-progress: true
+
+jobs:
+  health:
+    # Only the canonical repo monitors the live service — forks/clones never do.
+    if: github.repository == 'adisingh925/agentrec'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe public endpoints (3 tries each, to ride out a deploy blip)
+        id: probe
+        run: |
+          set -u
+          probe() {
+            url="$1"; name="$2"; code=000
+            for i in 1 2 3; do
+              code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$url" 2>/dev/null || echo 000)
+              if [ "$code" = "200" ]; then echo "  OK   $name ($code)"; return 0; fi
+              [ "$i" -lt 3 ] && sleep 10
+            done
+            echo "  DOWN $name (last HTTP $code)"; return 1
+          }
+          down=""
+          probe "https://api.agentrec.io/health"   "control-plane /health" || down="$down control-plane"
+          probe "https://agentrec.io/"              "marketing site"        || down="$down site"
+          probe "https://console.agentrec.io/"      "console"               || down="$down console"
+          if [ -n "$down" ]; then
+            echo "msg=agentrec DOWN:$down" >> "$GITHUB_OUTPUT"
+            echo "::error::agentrec uptime check failed — DOWN:$down"
+            exit 1
+          fi
+          echo "all endpoints healthy"
+
+      - name: Push alert to webhook (optional — set ALERT_WEBHOOK secret)
+        if: failure()
+        env:
+          ALERT_WEBHOOK: ${{ secrets.ALERT_WEBHOOK }}
+        run: |
+          if [ -z "${ALERT_WEBHOOK:-}" ]; then
+            echo "no ALERT_WEBHOOK secret set; relying on GitHub's workflow-failure notification"
+            exit 0
+          fi
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            -d "{\"text\":\"🔴 ${{ steps.probe.outputs.msg }} — ${run_url}\"}" \
+            "$ALERT_WEBHOOK" || true
