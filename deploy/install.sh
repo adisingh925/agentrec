@@ -79,11 +79,13 @@ UNIT
     echo "  logs: journalctl -u agentrec-watch -f"
   else
     echo "warning: --watch requested but systemd was not found; start it yourself:"
-    echo "  set -a; . /etc/agentrec/agent.env; set +a; agentrec watch --match $MATCH --flush $FLUSH"
+    echo "  export AGENTREC_ENDPOINT=$ENDPOINT AGENTREC_TOKEN=ar_ing_…"
+    echo "  agentrec watch --match $MATCH --flush $FLUSH"
   fi
 else
   echo; echo "record + auto-upload one workload:"
-  echo "  set -a; . /etc/agentrec/agent.env; set +a"
+  echo "  export AGENTREC_ENDPOINT=$ENDPOINT"
+  echo "  export AGENTREC_TOKEN=ar_ing_…    # your token (also saved in /etc/agentrec/agent.env)"
   echo "  agentrec trace -- <your-agent-command>"
   echo; echo "or capture the whole host continuously as a service — re-run with --watch"
 fi
