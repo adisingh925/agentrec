@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ func cmdWatch(argv []string) error {
 	name := fs.String("session", "node-watch", "session name")
 	noResolve := fs.Bool("no-resolve", false, "skip reverse DNS")
 	noColor := fs.Bool("no-color", false, "plain output when printing locally")
+	foreground := fs.Bool("foreground", false, "run the watch loop in this terminal instead of installing a systemd service")
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}
@@ -46,6 +48,15 @@ func cmdWatch(argv []string) error {
 		return errors.New("--match is required: at least one process-name substring (e.g. --match node,python)")
 	}
 	ep, tok := resolveTarget(*endpoint, *token)
+
+	// Running this by hand as root on a systemd host installs a background service instead
+	// of blocking your terminal. The service ExecStart passes --foreground to run the loop;
+	// INVOCATION_ID means systemd is already running us, so do not re-install.
+	if !*foreground && os.Getenv("INVOCATION_ID") == "" && os.Geteuid() == 0 {
+		if _, err := exec.LookPath("systemctl"); err == nil {
+			return installWatchService(patterns, *flush, *name, ep, tok)
+		}
+	}
 
 	// Meter node-hours for billing while this node is being watched.
 	hbStop := make(chan struct{})
@@ -192,4 +203,55 @@ func watchSelfTest(p *probe.Probe) error {
 			return nil
 		}
 	}
+}
+
+// installWatchService writes + enables a systemd unit that runs "watch --foreground", so
+// running "agentrec watch --match ..." by hand sets up continuous capture that survives reboots.
+func installWatchService(patterns []string, flush time.Duration, session, endpoint, token string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locating agentrec binary: %w", err)
+	}
+	// The service does not inherit your shell env, so persist the resolved endpoint/token
+	// (install.sh writes the same file). Only rewrite it when we actually have values.
+	if endpoint != "" || token != "" {
+		if mkErr := os.MkdirAll("/etc/agentrec", 0o755); mkErr == nil {
+			env := fmt.Sprintf(`AGENTREC_ENDPOINT=%s
+AGENTREC_TOKEN=%s
+`, endpoint, token)
+			_ = os.WriteFile("/etc/agentrec/agent.env", []byte(env), 0o600)
+		}
+	}
+	execLine := fmt.Sprintf("%s watch --match %s --flush %s --session %s --foreground --no-color",
+		self, strings.Join(patterns, ","), flush, session)
+	unit := fmt.Sprintf(`[Unit]
+Description=agentrec node-wide watch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=-/etc/agentrec/agent.env
+ExecStart=%s
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`, execLine)
+	if wErr := os.WriteFile("/etc/systemd/system/agentrec-watch.service", []byte(unit), 0o644); wErr != nil {
+		return fmt.Errorf("writing service unit (run as root): %w", wErr)
+	}
+	for _, args := range [][]string{{"daemon-reload"}, {"enable", "--now", "agentrec-watch"}} {
+		if out, sErr := exec.Command("systemctl", args...).CombinedOutput(); sErr != nil {
+			return fmt.Errorf("systemctl %s: %w: %s", strings.Join(args, " "), sErr, strings.TrimSpace(string(out)))
+		}
+	}
+	fmt.Println("agentrec-watch installed and started (match: " + strings.Join(patterns, ",") + ", flush: " + flush.String() + ")")
+	if endpoint == "" || token == "" {
+		fmt.Println("  note: no endpoint/token set - put them in /etc/agentrec/agent.env or pass --endpoint/--token, or it will not upload")
+	}
+	fmt.Println("  logs:  journalctl -u agentrec-watch -f")
+	fmt.Println("  stop:  systemctl disable --now agentrec-watch")
+	fmt.Println("  (add --foreground to record in this terminal instead)")
+	return nil
 }
