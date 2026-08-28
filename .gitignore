@@ -1,0 +1,8 @@
+# generated at build time (from host BTF, inside the container)
+bpf/vmlinux.h
+internal/probe/agentrec_bpfel.go
+internal/probe/agentrec_bpfel.o
+# build outputs
+dist/
+out/
+.wrangler/

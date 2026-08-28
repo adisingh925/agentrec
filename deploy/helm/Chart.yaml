@@ -1,0 +1,6 @@
+apiVersion: v2
+name: agentrec
+description: agentrec eBPF node agent — records and attributes AI-agent syscall activity
+type: application
+version: 0.2.0
+appVersion: "0.1.10"

@@ -1,0 +1,19 @@
+image:
+  repository: ghcr.io/adisingh925/agentrec-agent
+  tag: "v0.1.10"
+  pullPolicy: IfNotPresent
+
+# Control-plane ingest. Provide the token via --set or an existing secret.
+ingest:
+  endpoint: "https://api.agentrec.io"
+  token: ""                 # helm install ... --set ingest.token=ar_ing_xxx
+  existingSecret: ""        # or reference a secret with keys: endpoint, token
+
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits:   { memory: 256Mi }
+
+# node-wide capture: comma-separated binary-name substrings to auto-record
+watch:
+  match: "node,python,ruby,java,deno,bun,agent"
+  flush: "30s"

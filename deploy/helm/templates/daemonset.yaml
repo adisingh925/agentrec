@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ .Release.Name }}
+  labels: { app: {{ .Release.Name }} }
+spec:
+  selector:
+    matchLabels: { app: {{ .Release.Name }} }
+  template:
+    metadata:
+      labels: { app: {{ .Release.Name }} }
+    spec:
+      hostPID: true
+      containers:
+        - name: agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: { privileged: true }
+          command: ["agentrec"]
+          args: ["watch", "--match", "{{ .Values.watch.match }}", "--flush", "{{ .Values.watch.flush }}"]
+          env:
+            - name: AGENTREC_ENDPOINT
+              valueFrom: { secretKeyRef: { name: {{ .Values.ingest.existingSecret | default (printf "%s-ingest" .Release.Name) }}, key: endpoint } }
+            - name: AGENTREC_TOKEN
+              valueFrom: { secretKeyRef: { name: {{ .Values.ingest.existingSecret | default (printf "%s-ingest" .Release.Name) }}, key: token } }
+          volumeMounts:
+            - { name: sys, mountPath: /sys, readOnly: true }
+          resources: {{ toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: sys
+          hostPath: { path: /sys }
+      tolerations:
+        - operator: Exists

@@ -1,0 +1,49 @@
+# agentrec node agent — Kubernetes DaemonSet.
+#
+#   kubectl create namespace agentrec
+#   kubectl -n agentrec create secret generic agentrec-ingest \
+#     --from-literal=token=ar_ing_xxx --from-literal=endpoint=https://<api>
+#   kubectl apply -f agentrec-daemonset.yaml
+#
+# Runs one privileged pod per node in the host PID namespace (required — the kernel reports
+# init-namespace pids, so attribution only matches with hostPID: true).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: agentrec
+  namespace: agentrec
+  labels: { app: agentrec }
+spec:
+  selector:
+    matchLabels: { app: agentrec }
+  template:
+    metadata:
+      labels: { app: agentrec }
+    spec:
+      hostPID: true                       # attribution needs init-namespace pids
+      containers:
+        - name: agent
+          image: ghcr.io/adisingh925/agentrec-agent:v0.1.10
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true              # eBPF load; tighten to CAP_BPF/CAP_PERFMON later
+          command: ["agentrec"]
+          args: ["watch", "--match", "$(AGENTREC_MATCH)", "--flush", "30s"]
+          env:
+            - name: AGENTREC_MATCH
+              value: "node,python,ruby,java,deno,bun,agent"   # binary-name substrings to record
+
+            - name: AGENTREC_ENDPOINT
+              valueFrom: { secretKeyRef: { name: agentrec-ingest, key: endpoint } }
+            - name: AGENTREC_TOKEN
+              valueFrom: { secretKeyRef: { name: agentrec-ingest, key: token } }
+          volumeMounts:
+            - { name: sys, mountPath: /sys, readOnly: true }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { memory: 256Mi }
+      volumes:
+        - name: sys
+          hostPath: { path: /sys }
+      tolerations:
+        - operator: Exists                # run on every node, control-plane included
