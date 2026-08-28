@@ -23,12 +23,12 @@ spec:
       hostPID: true                       # attribution needs init-namespace pids
       containers:
         - name: agent
-          image: ghcr.io/adisingh925/agentrec:v0.1.12
+          image: ghcr.io/adisingh925/agentrec:v0.1.13
           imagePullPolicy: IfNotPresent
           securityContext:
             privileged: true              # eBPF load; tighten to CAP_BPF/CAP_PERFMON later
           command: ["agentrec"]
-          args: ["watch", "--match", "$(AGENTREC_MATCH)", "--flush", "30s"]
+          args: ["watch", "--match", "$(AGENTREC_MATCH)", "--flush", "30s", "--foreground"]
           env:
             - name: AGENTREC_MATCH
               value: "node,python,ruby,java,deno,bun,agent"   # binary-name substrings to record
