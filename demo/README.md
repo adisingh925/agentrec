@@ -6,6 +6,8 @@ Docker socket. Then `--enforce` denies the read in-kernel. It's the whole pitch 
 one take, and it's **safe**: it stages a fake credentials file in an isolated demo
 home and never touches your real secrets.
 
+![An AI agent asked to check the CI config is caught reading ~/.aws/credentials and connecting to docker.sock, then blocked in-kernel with --enforce](demo.gif)
+
 ## What's here
 
 - **`demo-agent.sh`** — a stand-in "coding agent." Announces a benign task, calls

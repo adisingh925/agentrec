@@ -16,6 +16,10 @@ No SDK. No code changes. No trusting the agent's own logs.
 
 </div>
 
+<p align="center">
+  <img src="demo/demo.gif" alt="An AI agent asked to check the CI config is caught reading ~/.aws/credentials and connecting to docker.sock, then blocked in-kernel with --enforce" width="820">
+</p>
+
 ---
 
 ## The problem
