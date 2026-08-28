@@ -23,7 +23,7 @@ spec:
       hostPID: true                       # attribution needs init-namespace pids
       containers:
         - name: agent
-          image: ghcr.io/adisingh925/agentrec:v0.1.10
+          image: ghcr.io/adisingh925/agentrec:v0.1.12
           imagePullPolicy: IfNotPresent
           securityContext:
             privileged: true              # eBPF load; tighten to CAP_BPF/CAP_PERFMON later
