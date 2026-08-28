@@ -1,6 +1,5 @@
-# Build check: on every push to main and on PRs, verify the agent (eBPF + Go) and the
-# control-plane server still build. Versioned publishing of the agent is handled by
-# release.yml on tags; the control-plane deploy is handled by the VM pull-deploy timer.
+# Build check: on every push to main and on PRs, verify the agent (eBPF + Go) builds.
+# Versioned publishing of the agent image + binaries is handled by release.yml on tags.
 name: build
 on:
   push:
@@ -16,13 +15,3 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Build agent image (eBPF + Go)
         run: docker build --target runtime -t agentrec:ci .
-
-  server:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: Syntax-check control-plane server
-        run: node --check server/server.js
