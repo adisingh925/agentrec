@@ -17,7 +17,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext: { privileged: true }
           command: ["agentrec"]
-          args: ["watch", "--match", "{{ .Values.watch.match }}", "--flush", "{{ .Values.watch.flush }}"]
+          args: ["watch", "--match", "{{ .Values.watch.match }}", "--flush", "{{ .Values.watch.flush }}", "--foreground"]
           env:
             - name: AGENTREC_ENDPOINT
               valueFrom: { secretKeyRef: { name: {{ .Values.ingest.existingSecret | default (printf "%s-ingest" .Release.Name) }}, key: endpoint } }
