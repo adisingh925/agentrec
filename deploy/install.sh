@@ -11,6 +11,7 @@ set -eu
 API_DEFAULT="https://api.agentrec.io"
 REL_DEFAULT="https://github.com/adisingh925/agentrec/releases/latest/download"
 ENDPOINT="$API_DEFAULT"; REL="$REL_DEFAULT"; TOKEN=""; BIN_URL=""; PREFIX="/usr/local/bin"
+WATCH=0; MATCH="node,python,ruby,java,deno,bun,agent"; FLUSH="30s"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -19,6 +20,9 @@ while [ $# -gt 0 ]; do
     --bin-url)  BIN_URL="$2"; shift 2;;
     --release)  REL="$2"; shift 2;;
     --prefix)   PREFIX="$2"; shift 2;;
+    --watch)    WATCH=1; shift;;
+    --match)    MATCH="$2"; shift 2;;
+    --flush)    FLUSH="$2"; shift 2;;
     *) echo "unknown flag: $1" >&2; exit 2;;
   esac
 done
@@ -53,7 +57,33 @@ printf 'AGENTREC_ENDPOINT=%s\nAGENTREC_TOKEN=%s\n' "$ENDPOINT" "$TOKEN" > /etc/a
 chmod 600 /etc/agentrec/agent.env
 
 echo "installed: $("$PREFIX"/agentrec info 2>/dev/null | head -1 || echo agentrec)"
-echo
-echo "record + auto-upload a workload:"
-echo "  set -a; . /etc/agentrec/agent.env; set +a"
-echo "  agentrec trace -- <your-agent-command>"
+
+if [ "$WATCH" = 1 ]; then
+  if command -v systemctl >/dev/null 2>&1; then
+    cat > /etc/systemd/system/agentrec-watch.service <<UNIT
+[Unit]
+Description=agentrec node-wide watch
+After=network-online.target
+Wants=network-online.target
+[Service]
+EnvironmentFile=/etc/agentrec/agent.env
+ExecStart=$PREFIX/agentrec watch --match $MATCH --flush $FLUSH --no-color
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable --now agentrec-watch >/dev/null 2>&1 || systemctl restart agentrec-watch
+    echo; echo "agentrec-watch is now running as a service (match: $MATCH, flush: $FLUSH)"
+    echo "  logs: journalctl -u agentrec-watch -f"
+  else
+    echo "warning: --watch requested but systemd was not found; start it yourself:"
+    echo "  set -a; . /etc/agentrec/agent.env; set +a; agentrec watch --match $MATCH --flush $FLUSH"
+  fi
+else
+  echo; echo "record + auto-upload one workload:"
+  echo "  set -a; . /etc/agentrec/agent.env; set +a"
+  echo "  agentrec trace -- <your-agent-command>"
+  echo; echo "or capture the whole host continuously as a service — re-run with --watch"
+fi
