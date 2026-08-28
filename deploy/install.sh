@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(id -u)" = "0" ] || { echo "please run as root (eBPF needs privileges)"; exit 1; }
-[ -n "$TOKEN" ] || { echo "--token is required (an ingest token, ar_ing_…)"; exit 1; }
+[ "$WATCH" != 1 ] || [ -n "$TOKEN" ] || { echo "--token is required with --watch (an ingest token, ar_ing_…)"; exit 1; }
 [ "$(uname -s)" = "Linux" ] || { echo "agentrec runs on Linux only (got $(uname -s))"; exit 1; }
 [ -r /sys/kernel/btf/vmlinux ] || echo "warning: /sys/kernel/btf/vmlinux missing — kernel may lack BTF (need 5.8+ CO-RE)"
 
@@ -52,9 +52,11 @@ GOT="$(sha256sum "$TMP" | awk '{print $1}')"
 echo "checksum verified"
 
 install -m 0755 "$TMP" "$PREFIX/agentrec"; rm -f "$TMP"
-mkdir -p /etc/agentrec
-printf 'AGENTREC_ENDPOINT=%s\nAGENTREC_TOKEN=%s\n' "$ENDPOINT" "$TOKEN" > /etc/agentrec/agent.env
-chmod 600 /etc/agentrec/agent.env
+if [ -n "$TOKEN" ]; then
+  mkdir -p /etc/agentrec
+  printf 'AGENTREC_ENDPOINT=%s\nAGENTREC_TOKEN=%s\n' "$ENDPOINT" "$TOKEN" > /etc/agentrec/agent.env
+  chmod 600 /etc/agentrec/agent.env
+fi
 
 echo "installed: $("$PREFIX"/agentrec info 2>/dev/null | head -1 || echo agentrec)"
 
@@ -85,7 +87,7 @@ UNIT
 else
   echo; echo "record + auto-upload one workload:"
   echo "  export AGENTREC_ENDPOINT=$ENDPOINT"
-  echo "  export AGENTREC_TOKEN=ar_ing_…    # your token (also saved in /etc/agentrec/agent.env)"
+  echo "  export AGENTREC_TOKEN=ar_ing_…    # your ingest token"
   echo "  agentrec trace -- <your-agent-command>"
-  echo; echo "or capture the whole host continuously as a service — re-run with --watch"
+  echo; echo "or capture the whole host continuously as a service — re-run with --token ar_ing_… --watch"
 fi
