@@ -9,7 +9,7 @@
 set -eu
 
 API_DEFAULT="https://api.agentrec.io"
-REL_DEFAULT="https://github.com/adisingh925/agentrec-agent/releases/latest/download"
+REL_DEFAULT="https://github.com/adisingh925/agentrec/releases/latest/download"
 ENDPOINT="$API_DEFAULT"; REL="$REL_DEFAULT"; TOKEN=""; BIN_URL=""; PREFIX="/usr/local/bin"
 
 while [ $# -gt 0 ]; do
