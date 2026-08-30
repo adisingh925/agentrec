@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// decodeJSON reads a JSON request body into a map for assertions.
+// decodeBody reads a JSON request body into a map for assertions.
 func decodeBody(t *testing.T, r *http.Request) map[string]any {
 	t.Helper()
 	var m map[string]any
@@ -47,10 +47,10 @@ func TestRegisterNode(t *testing.T) {
 	}
 }
 
-// registerNode surfaces a non-201 as an error so callers fall back to a legacy heartbeat.
+// registerNode surfaces a non-201 as an error so the caller skips the heartbeat and retries later.
 func TestRegisterNodeNon201(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound) // e.g. older control plane without the endpoint
+		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 	if _, _, err := registerNode(srv.URL, "t", "fp_123456"); err == nil {
@@ -58,36 +58,83 @@ func TestRegisterNodeNon201(t *testing.T) {
 	}
 }
 
-// TestSendHeartbeatAttested: with a secret present the heartbeat carries node_id+node_secret.
+// TestSendHeartbeatAttested: with a credential already in hand, the heartbeat carries
+// node_id+node_secret and no re-registration happens.
 func TestSendHeartbeatAttested(t *testing.T) {
 	var body map[string]any
+	var registers int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes/register" {
+			registers++
+		}
 		body = decodeBody(t, r)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
 	sendHeartbeat(srv.URL, "ar_ing_tok", &nodeCred{fp: "fp1", nodeID: "node_abc", secret: "nsec_xyz"})
+	if registers != 0 {
+		t.Errorf("already-credentialed node must not re-register, got %d", registers)
+	}
 	if body["node_id"] != "node_abc" || body["node_secret"] != "nsec_xyz" {
 		t.Fatalf("attested heartbeat body = %v", body)
 	}
 }
 
-// TestSendHeartbeatLegacy: without a secret the heartbeat sends node_id only (no node_secret key).
-func TestSendHeartbeatLegacy(t *testing.T) {
-	var body map[string]any
+// TestSendHeartbeatRegistersWhenUncredentialed: an uncredentialed node registers lazily on its
+// first heartbeat, stores the credential, and sends an attested ping.
+func TestSendHeartbeatRegistersWhenUncredentialed(t *testing.T) {
+	var registers int
+	var hbBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body = decodeBody(t, r)
+		switch r.URL.Path {
+		case "/v1/nodes/register":
+			registers++
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"node_id": "node_new", "node_secret": "nsec_new"})
+		case "/v1/heartbeat":
+			hbBody = decodeBody(t, r)
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	cred := &nodeCred{fp: "fp_stable"}
+	sendHeartbeat(srv.URL, "ar_ing_tok", cred)
+	if registers != 1 {
+		t.Errorf("expected 1 registration, got %d", registers)
+	}
+	if cred.nodeID != "node_new" || cred.secret != "nsec_new" {
+		t.Errorf("credential not stored: %+v", cred)
+	}
+	if hbBody["node_id"] != "node_new" || hbBody["node_secret"] != "nsec_new" {
+		t.Errorf("heartbeat not attested: %v", hbBody)
+	}
+}
+
+// TestSendHeartbeatSkipsWhenRegisterFails: if registration fails while uncredentialed, NO heartbeat
+// is sent — an unattested node can't be metered, so the tick is skipped and retried next time.
+func TestSendHeartbeatSkipsWhenRegisterFails(t *testing.T) {
+	var registers, heartbeats int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes/register" {
+			registers++
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		heartbeats++
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
-	sendHeartbeat(srv.URL, "t", &nodeCred{fp: "fp1", nodeID: "localhash"})
-	if body["node_id"] != "localhash" {
-		t.Fatalf("node_id = %v", body["node_id"])
+	sendHeartbeat(srv.URL, "ar_ing_tok", &nodeCred{fp: "fp_stable"})
+	if registers != 1 {
+		t.Errorf("expected 1 registration attempt, got %d", registers)
 	}
-	if _, ok := body["node_secret"]; ok {
-		t.Fatalf("legacy heartbeat must not include node_secret: %v", body)
+	if heartbeats != 0 {
+		t.Errorf("expected NO heartbeat when unregistered, got %d", heartbeats)
 	}
 }
 
@@ -130,28 +177,5 @@ func TestSendHeartbeat401Reregister(t *testing.T) {
 	}
 	if retryBody["node_secret"] != "nsec_fresh" {
 		t.Errorf("retry did not use fresh secret: %v", retryBody)
-	}
-}
-
-// A legacy (unattested) heartbeat that 401s must NOT try to re-register — there is no secret to
-// refresh, so it stays a best-effort no-op (avoids a pointless second call against a bad token).
-func TestSendHeartbeatLegacy401NoReregister(t *testing.T) {
-	var registers, heartbeats int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/nodes/register" {
-			registers++
-		} else {
-			heartbeats++
-		}
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer srv.Close()
-
-	sendHeartbeat(srv.URL, "bad_tok", &nodeCred{fp: "fp1", nodeID: "localhash"})
-	if registers != 0 {
-		t.Errorf("legacy 401 must not re-register, got %d", registers)
-	}
-	if heartbeats != 1 {
-		t.Errorf("expected exactly 1 heartbeat attempt, got %d", heartbeats)
 	}
 }
