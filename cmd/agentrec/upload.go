@@ -213,37 +213,102 @@ func nodeID() string {
 	return hex.EncodeToString(h[:8])
 }
 
-// sendHeartbeat marks this node active for the current clock hour on the control plane. Best-effort.
-func sendHeartbeat(endpoint, token, node string) {
-	if endpoint == "" || token == "" {
-		return
-	}
-	body, _ := json.Marshal(map[string]string{"node_id": node})
-	req, err := http.NewRequest(http.MethodPost, endpoint+"/v1/heartbeat", bytes.NewReader(body))
+// nodeCred is this node's attestation state. secret is the server-issued node_secret; when it is
+// empty the node is unregistered and heartbeats fall back to a legacy (unattested) node_id-only
+// ping. Mutated only from the single heartbeat goroutine, so it needs no lock.
+type nodeCred struct {
+	fp     string // stable fingerprint sent to /v1/nodes/register (the hashed machine id)
+	nodeID string // server-issued node_… id once registered; the local hash until then
+	secret string // server-issued node_secret; empty => not attested
+}
+
+// registerNode obtains (or refreshes) this node's attestation credential from the control plane.
+// Registration is idempotent per (workspace, fingerprint): a restart reuses the same node_id and
+// just rotates the secret. Returns an error on any transport failure or non-201 so callers can
+// fall back to a legacy unattested heartbeat against an older/unreachable control plane.
+func registerNode(endpoint, token, fingerprint string) (nodeID, secret string, err error) {
+	hostname, _ := os.Hostname()
+	reqBody, _ := json.Marshal(map[string]string{"fingerprint": fingerprint, "hostname": hostname})
+	req, err := http.NewRequest(http.MethodPost, endpoint+"/v1/nodes/register", bytes.NewReader(reqBody))
 	if err != nil {
-		return
+		return "", "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "agentrec-agent/1")
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
-		return
+		return "", "", err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return "", "", fmt.Errorf("register failed: HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		NodeID     string `json:"node_id"`
+		NodeSecret string `json:"node_secret"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", "", err
+	}
+	if out.NodeID == "" || out.NodeSecret == "" {
+		return "", "", errors.New("register response missing node_id/node_secret")
+	}
+	return out.NodeID, out.NodeSecret, nil
 }
 
-// startHeartbeat pings /v1/heartbeat once immediately and then every 5 minutes until stop is
-// closed, so the workspace's node-hours are metered for usage-based billing. No-op without an
-// endpoint/token; runs in its own goroutine and never blocks or fails the recording.
+// sendHeartbeat marks this node active for the current clock hour on the control plane. Best-effort.
+// With a credential it sends node_id+node_secret (attested, billing-grade); otherwise a legacy
+// node_id-only ping. A 401 while attested means the secret was revoked/rotated server-side, so it
+// re-registers once and retries — this also self-heals after the control plane is wiped.
+func sendHeartbeat(endpoint, token string, cred *nodeCred) {
+	if endpoint == "" || token == "" {
+		return
+	}
+	post := func() int {
+		payload := map[string]string{"node_id": cred.nodeID}
+		if cred.secret != "" {
+			payload["node_secret"] = cred.secret
+		}
+		body, _ := json.Marshal(payload)
+		req, err := http.NewRequest(http.MethodPost, endpoint+"/v1/heartbeat", bytes.NewReader(body))
+		if err != nil {
+			return 0
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "agentrec-agent/1")
+		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+		if err != nil {
+			return 0
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if post() == http.StatusUnauthorized && cred.secret != "" {
+		if id, sec, err := registerNode(endpoint, token, cred.fp); err == nil {
+			cred.nodeID, cred.secret = id, sec
+			post()
+		}
+	}
+}
+
+// startHeartbeat attests this node then pings /v1/heartbeat immediately and every 5 minutes until
+// stop is closed, so the workspace's node-hours are metered for usage-based billing. No-op without
+// an endpoint/token; runs in its own goroutine and never blocks or fails the recording. If
+// registration fails (older/unreachable control plane) it degrades to a legacy unattested ping.
 func startHeartbeat(endpoint, token string, stop <-chan struct{}) {
 	endpoint, token = resolveTarget(endpoint, token)
 	if endpoint == "" || token == "" {
 		return
 	}
-	node := nodeID()
+	fp := nodeID()
+	cred := &nodeCred{fp: fp, nodeID: fp}
+	if id, sec, err := registerNode(endpoint, token, fp); err == nil {
+		cred.nodeID, cred.secret = id, sec
+	}
 	go func() {
-		sendHeartbeat(endpoint, token, node)
+		sendHeartbeat(endpoint, token, cred)
 		tk := time.NewTicker(5 * time.Minute)
 		defer tk.Stop()
 		for {
@@ -251,7 +316,7 @@ func startHeartbeat(endpoint, token string, stop <-chan struct{}) {
 			case <-stop:
 				return
 			case <-tk.C:
-				sendHeartbeat(endpoint, token, node)
+				sendHeartbeat(endpoint, token, cred)
 			}
 		}
 	}()
