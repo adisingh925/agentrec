@@ -20,10 +20,7 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 )
 
-// cmdWatch runs node-wide: instead of wrapping a command, the kernel emits every untagged
-// exec (when watch is on) as a candidate; here we match the binary name against --match and,
-// on a hit, tag the pid so the kernel captures it and all its descendants. Accumulated
-// activity is flushed to the control plane on an interval. This is the DaemonSet mode.
+/* cmdWatch runs node-wide (DaemonSet mode): tags pids whose binary matches --match and flushes captured activity on an interval. */
 func cmdWatch(argv []string) error {
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	match := fs.String("match", "", "comma-separated process-name substrings to auto-record (e.g. node,python,claude)")
@@ -49,16 +46,14 @@ func cmdWatch(argv []string) error {
 	}
 	ep, tok := resolveTarget(*endpoint, *token)
 
-	// Running this by hand as root on a systemd host installs a background service instead
-	// of blocking your terminal. The service ExecStart passes --foreground to run the loop;
-	// INVOCATION_ID means systemd is already running us, so do not re-install.
+	/* Run by hand as root on a systemd host: install a service instead of blocking. INVOCATION_ID means systemd already runs us. */
 	if !*foreground && os.Getenv("INVOCATION_ID") == "" && os.Geteuid() == 0 {
 		if _, err := exec.LookPath("systemctl"); err == nil {
 			return installWatchService(patterns, *flush, *name, ep, tok)
 		}
 	}
 
-	// Meter node-hours for billing while this node is being watched.
+	/* Meter node-hours for billing while this node is being watched. */
 	hbStop := make(chan struct{})
 	defer close(hbStop)
 	startHeartbeat(ep, tok, hbStop)
@@ -80,7 +75,7 @@ func cmdWatch(argv []string) error {
 
 	var mu sync.Mutex
 	cur := record.NewSession(sessionID, *name)
-	tagged := make(map[uint32]bool) // pids we've adopted
+	tagged := make(map[uint32]bool) /* adopted pids */
 
 	readerDone := make(chan struct{})
 	go func() {
@@ -99,10 +94,10 @@ func cmdWatch(argv []string) error {
 			if err != nil {
 				continue
 			}
-			// exec of an untagged pid is a candidate: match, and adopt on a hit.
+			/* exec of an untagged pid: adopt on a match. */
 			if e.Type == "exec" && !tagged[e.Pid] {
 				if !matchWatch(e, patterns) {
-					continue // not an agent we care about
+					continue
 				}
 				tagged[e.Pid] = true
 				_ = p.Tag(e.Pid, probe.Tag{SessionID: sessionID, CallSeq: uint64(e.Pid)})
@@ -155,7 +150,7 @@ func cmdWatch(argv []string) error {
 	}
 }
 
-// matchWatch reports whether an exec event's binary name matches any watch pattern.
+/* matchWatch reports whether an exec's binary name matches any watch pattern. */
 func matchWatch(e record.Event, patterns []string) bool {
 	base := e.Path
 	if base == "" {
@@ -172,9 +167,7 @@ func matchWatch(e record.Event, patterns []string) bool {
 	return false
 }
 
-// watchSelfTest proves the pipeline before enabling watch: tag our own pid, make one
-// recognisable syscall, and require it back within 2s. Catches the pid-namespace mismatch
-// (must run with hostPID) before we silently record nothing.
+/* watchSelfTest proves the pipeline before enabling watch, catching a pid-namespace mismatch (needs hostPID) before we silently record nothing. */
 func watchSelfTest(p *probe.Probe) error {
 	self := uint32(os.Getpid())
 	sentinel := fmt.Sprintf("/agentrec-watch-selftest-%d", self)
@@ -205,15 +198,13 @@ func watchSelfTest(p *probe.Probe) error {
 	}
 }
 
-// installWatchService writes + enables a systemd unit that runs "watch --foreground", so
-// running "agentrec watch --match ..." by hand sets up continuous capture that survives reboots.
+/* installWatchService writes and enables a systemd unit running "watch --foreground" for capture that survives reboots. */
 func installWatchService(patterns []string, flush time.Duration, session, endpoint, token string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locating agentrec binary: %w", err)
 	}
-	// The service does not inherit your shell env, so persist the resolved endpoint/token
-	// (install.sh writes the same file). Only rewrite it when we actually have values.
+	/* The service does not inherit shell env, so persist the resolved endpoint/token (only when we have values). */
 	if endpoint != "" || token != "" {
 		if mkErr := os.MkdirAll("/etc/agentrec", 0o755); mkErr == nil {
 			env := fmt.Sprintf(`AGENTREC_ENDPOINT=%s

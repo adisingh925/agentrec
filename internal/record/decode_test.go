@@ -5,8 +5,7 @@ import (
 	"testing"
 )
 
-// TestDecode* validate the hand-written offset parsing in Decode against known raw records,
-// so an offset bug can't slip past the reflection-free decode.
+/* TestDecode* validate Decode's hand-written offset parsing against known raw records. */
 func TestDecodeOpen(t *testing.T) {
 	le := binary.LittleEndian
 	rec := make([]byte, RawEventSize)
@@ -17,7 +16,7 @@ func TestDecodeOpen(t *testing.T) {
 	le.PutUint32(rec[28:], 55)
 	le.PutUint32(rec[32:], 66)
 	le.PutUint32(rec[36:], EvtOpen)
-	le.PutUint32(rec[44:], 0o100) // O_CREAT -> write
+	le.PutUint32(rec[44:], 0o100) /* O_CREAT -> write */
 	copy(rec[80:96], "bash\x00")
 	path := "/etc/passwd"
 	copy(rec[96:], append([]byte(path), 0))
@@ -76,9 +75,7 @@ func TestDecodeShort(t *testing.T) {
 	}
 }
 
-// TestDecodeHeaderOnly covers opt2: fork/exit and inet connect events reserve only the
-// 96-byte header (no buf), so Decode must accept records that short. daddr/dport/af all
-// live inside the header, so a 96-byte connect still decodes its destination fully.
+/* TestDecodeHeaderOnly checks Decode accepts 96-byte header-only records (fork/exit/inet connect). */
 func TestDecodeHeaderOnly(t *testing.T) {
 	le := binary.LittleEndian
 
@@ -107,7 +104,7 @@ func TestDecodeHeaderOnly(t *testing.T) {
 		t.Fatalf("connect: %+v", e)
 	}
 
-	// One byte short of the header is still rejected.
+	/* One byte short of the header is rejected. */
 	if _, err := Decode(make([]byte, rawHeaderSize-1)); err == nil {
 		t.Fatal("expected error just under header size")
 	}

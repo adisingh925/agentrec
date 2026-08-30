@@ -15,8 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Tag is the kernel-side attribution record: which agent session, and which tool call
-// within it, a process belongs to.
+/* Tag is the kernel-side attribution record: which session and tool call a process belongs to. */
 type Tag struct {
 	SessionID uint64
 	CallSeq   uint64
@@ -34,16 +33,15 @@ type Probe struct {
 	blockRules  *ebpf.Map
 	ruleEvCount *ebpf.Map
 
-	// lsmAvail is true when the kernel carries the BPF LSM in its active list, which is the
-	// precondition for the lsm/* programs to attach.
+	/* lsmAvail is true when the BPF LSM is in the kernel's active list, letting lsm/* programs attach. */
 	lsmAvail bool
 }
 
 type tracepoint struct {
 	group string
 	name  string
-	prog  string // program (C function) name within the collection
-	// optional means the kernel may not have this tracepoint; skip it rather than fail.
+	prog  string /* program (C function) name within the collection */
+	/* optional: skip rather than fail if the kernel lacks this tracepoint. */
 	optional bool
 }
 
@@ -60,9 +58,7 @@ var tracepoints = []tracepoint{
 
 var lsmPrograms = []string{"ar_file_open", "ar_socket_connect", "ar_bprm_check", "ar_path_unlink"}
 
-// bpfLSMActive reports whether the kernel has the BPF LSM in its active list. An lsm/*
-// program can only attach when it does, which requires "bpf" in the kernel command line's
-// lsm= list (e.g. lsm=lockdown,capability,landlock,yama,apparmor,bpf).
+/* bpfLSMActive reports whether "bpf" is in the kernel's active lsm= list (required to attach lsm/* programs). */
 func bpfLSMActive() bool {
 	b, err := os.ReadFile("/sys/kernel/security/lsm")
 	if err != nil {
@@ -76,7 +72,7 @@ func bpfLSMActive() bool {
 	return false
 }
 
-// Load verifies, loads and attaches every probe. The returned Probe owns the ring buffer.
+/* Load verifies, loads and attaches every probe. The returned Probe owns the ring buffer. */
 func Load() (*Probe, error) {
 	if err := ensureTracefs(); err != nil {
 		return nil, err
@@ -92,9 +88,7 @@ func Load() (*Probe, error) {
 
 	lsmAvail := bpfLSMActive()
 	if !lsmAvail {
-		// Without the BPF LSM in the active list the lsm/* programs can't attach -- and on
-		// kernels built without CONFIG_BPF_LSM they can't even load. Drop them from the spec
-		// so recording still works everywhere (in-kernel enforcement requires the BPF LSM).
+		/* Drop lsm/* programs when the BPF LSM is absent; they can't attach (or even load) so recording still works everywhere. */
 		for _, name := range lsmPrograms {
 			delete(spec.Programs, name)
 		}
@@ -147,23 +141,16 @@ func Load() (*Probe, error) {
 	}
 	p.Reader = rd
 
-	// All programs are loaded and CO-RE relocation is done; nothing on the runtime path
-	// touches kernel BTF again (map ops and ring-buffer reads never do, and a later
-	// SetEnforce->attachLSM attaches by already-resolved attach_btf_id on loaded program FDs).
-	// Drop cilium/ebpf's process-global parsed /sys/kernel/btf/vmlinux Spec so it's collectable,
-	// then force a GC + scavenge to return those tens of MB to the OS now rather than later.
+	/* Loading is done and the runtime path never touches kernel BTF again; free the parsed vmlinux Spec and return the memory to the OS now. */
 	btf.FlushKernelSpec()
 	debug.FreeOSMemory()
 	return p, nil
 }
 
-// LSMAvailable reports whether in-kernel BPF-LSM enforcement can be used on this host.
+/* LSMAvailable reports whether in-kernel BPF-LSM enforcement can be used on this host. */
 func (p *Probe) LSMAvailable() bool { return p.lsmAvail }
 
-// SetEnforce toggles in-kernel enforcement (config[0]) and reports the mode actually in
-// effect: "lsm" when the BPF-LSM hooks are attached (a matching action is denied with a
-// clean -EPERM and the agent keeps running), "unavailable" when the kernel lacks the BPF LSM
-// (the hooks are the only enforcement path, so nothing can be denied), or "off" when disabling.
+/* SetEnforce toggles in-kernel enforcement and reports the mode in effect: "lsm", "unavailable", or "off". */
 func (p *Probe) SetEnforce(on bool) (string, error) {
 	var v uint32
 	if on {
@@ -206,32 +193,28 @@ func (p *Probe) attachLSM() error {
 	return nil
 }
 
-// Dynamic block rules mirror a workspace's enabled "block" policy into the block_rules eBPF
-// map, which the LSM hooks consult at runtime. In-kernel matching is limited to what the
-// verifier and available context allow: file-open and unix-socket-connect paths, matched by
-// suffix/prefix/equals. Everything else stays detection-only (evaluated in the control plane).
+/* Dynamic block rules mirror the "block" policy into the block_rules map that LSM hooks consult; in-kernel matching covers file-open and unix-connect paths by suffix/prefix/equals, everything else stays detection-only. */
 const (
-	MaxBlockRules = 32 // must equal MAX_RULES in bpf/agentrec.bpf.c
-	MaxBlockPat   = 63 // must equal MAX_PAT in bpf/agentrec.bpf.c
+	MaxBlockRules = 32 /* must equal MAX_RULES in bpf/agentrec.bpf.c */
+	MaxBlockPat   = 63 /* must equal MAX_PAT in bpf/agentrec.bpf.c */
 
-	EvOpen    uint8 = 1 // REV_OPEN
-	EvConnect uint8 = 2 // REV_CONNECT
-	EvExec    uint8 = 3 // REV_EXEC
-	EvUnlink  uint8 = 4 // REV_UNLINK
-	OpSuffix  uint8 = 1 // ROP_SUFFIX
-	OpPrefix  uint8 = 2 // ROP_PREFIX
-	OpEquals  uint8 = 3 // ROP_EQUALS
+	EvOpen    uint8 = 1 /* REV_OPEN */
+	EvConnect uint8 = 2 /* REV_CONNECT */
+	EvExec    uint8 = 3 /* REV_EXEC */
+	EvUnlink  uint8 = 4 /* REV_UNLINK */
+	OpSuffix  uint8 = 1 /* ROP_SUFFIX */
+	OpPrefix  uint8 = 2 /* ROP_PREFIX */
+	OpEquals  uint8 = 3 /* ROP_EQUALS */
 )
 
-// BlockRule is one enforceable policy rule in the form the kernel consumes.
+/* BlockRule is one enforceable policy rule in the form the kernel consumes. */
 type BlockRule struct {
-	Event   uint8  // EvOpen | EvConnect
-	Op      uint8  // OpSuffix | OpPrefix | OpEquals
-	Pattern string // 1..MaxBlockPat bytes
+	Event   uint8  /* EvOpen | EvConnect */
+	Op      uint8  /* OpSuffix | OpPrefix | OpEquals */
+	Pattern string /* 1..MaxBlockPat bytes */
 }
 
-// bpfBlockRule mirrors `struct block_rule` in the BPF program byte-for-byte (68 bytes; all
-// byte fields, so no padding creeps in on either side).
+/* bpfBlockRule mirrors `struct block_rule` in the BPF program byte-for-byte (68 bytes, no padding). */
 type bpfBlockRule struct {
 	Active uint8
 	Event  uint8
@@ -240,16 +223,12 @@ type bpfBlockRule struct {
 	Pat    [MaxBlockPat + 1]byte
 }
 
-// SetBlockRules replaces the in-kernel dynamic policy with `rules` (capped at MaxBlockRules).
-// It writes each valid rule into the block_rules array and publishes the count in config[3],
-// which bounds the LSM match loop. Malformed rules are skipped. Returns the number applied.
+/* SetBlockRules replaces the in-kernel dynamic policy with `rules` (capped at MaxBlockRules), skipping malformed ones; returns the number applied. */
 func (p *Probe) SetBlockRules(rules []BlockRule) (int, error) {
 	if p.blockRules == nil {
 		return 0, errors.New("block_rules map not loaded")
 	}
-	// opt4 over-estimate sandwich: mark every event type hot before rewriting the rule set,
-	// so an LSM hook never reads a 0 count (and skips) for a type mid-swap. Exact per-event
-	// counts are published after the write below.
+	/* Mark every event type hot before the rewrite so no LSM hook reads a 0 count mid-swap; exact counts published after. */
 	if p.ruleEvCount != nil {
 		for ev := uint32(1); ev <= 4; ev++ {
 			_ = p.ruleEvCount.Put(ev, uint32(MaxBlockRules))
@@ -278,12 +257,11 @@ func (p *Probe) SetBlockRules(rules []BlockRule) (int, error) {
 		perEv[r.Event]++
 		n++
 	}
-	// Publish the active count; the kernel only scans slots [0,count), so stale higher slots
-	// are ignored and need no clearing.
+	/* Publish the active count; the kernel scans only slots [0,count), so stale higher slots need no clearing. */
 	if err := p.arConfig.Put(uint32(3), uint32(n)); err != nil {
 		return n, fmt.Errorf("publishing rule count: %w", err)
 	}
-	// exact per-event counts: types with no rule drop to 0 so their LSM hook fast-skips.
+	/* exact per-event counts: types with no rule drop to 0 so their LSM hook fast-skips. */
 	if p.ruleEvCount != nil {
 		for ev := uint32(1); ev <= 4; ev++ {
 			if err := p.ruleEvCount.Put(ev, perEv[ev]); err != nil {
@@ -294,9 +272,7 @@ func (p *Probe) SetBlockRules(rules []BlockRule) (int, error) {
 	return n, nil
 }
 
-// SetWatch toggles node-wide discovery. When enabled, the kernel emits every untagged exec
-// as a candidate; userspace matches the binary name and tags matching pids (session = the
-// node session) so their descendants are captured in-kernel.
+/* SetWatch toggles node-wide discovery: the kernel emits every untagged exec, userspace tags pids matching the binary name so descendants are captured. */
 func (p *Probe) SetWatch(enabled bool, session uint64) error {
 	var w uint32
 	if enabled {
@@ -308,12 +284,12 @@ func (p *Probe) SetWatch(enabled bool, session uint64) error {
 	return p.nodeSess.Put(uint32(0), session)
 }
 
-// Tag seeds attribution for a pid. Descendants inherit it in-kernel at fork time.
+/* Tag seeds attribution for a pid. Descendants inherit it in-kernel at fork time. */
 func (p *Probe) Tag(pid uint32, t Tag) error {
 	return p.pidTags.Put(pid, agentrecTag{SessionId: t.SessionID, CallSeq: t.CallSeq})
 }
 
-// Untag removes attribution for a pid. Used to clean up after the self-test.
+/* Untag removes attribution for a pid. Used to clean up after the self-test. */
 func (p *Probe) Untag(pid uint32) error {
 	return p.pidTags.Delete(pid)
 }
@@ -337,10 +313,9 @@ func (p *Probe) TaggedPIDs() []uint32 {
 	return out
 }
 
-// Stats reports emitted and dropped event counts, summed across CPUs.
+/* Stats reports emitted and dropped event counts, summed across CPUs. */
 func (p *Probe) Stats() (emitted, dropped uint64) {
-	// stats is a PERCPU_ARRAY: Lookup fills a per-CPU slice (sized to possible CPUs by
-	// cilium/ebpf); sum every element for the global total.
+	/* stats is a PERCPU_ARRAY: Lookup fills a per-CPU slice; sum every element for the global total. */
 	var perCPU []uint64
 	if err := p.stats.Lookup(uint32(0), &perCPU); err == nil {
 		for _, c := range perCPU {
@@ -368,9 +343,7 @@ func (p *Probe) Close() {
 	}
 }
 
-// ensureTracefs makes tracepoint attachment possible inside a container, where debugfs is
-// usually present but unmounted.
-// EnsureTracefs is exported so diagnostics can make the same attempt the loader does.
+/* EnsureTracefs mounts debugfs if needed so tracepoints attach inside a container; exported for diagnostics. */
 func EnsureTracefs() error { return ensureTracefs() }
 
 func ensureTracefs() error {
@@ -389,7 +362,7 @@ func ensureTracefs() error {
 	return nil
 }
 
-// KernelHint returns a short description of the running kernel, for diagnostics.
+/* KernelHint returns a short description of the running kernel, for diagnostics. */
 func KernelHint() string {
 	var u unix.Utsname
 	if err := unix.Uname(&u); err != nil {

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// old* replicate the pre-optimization IsSecret/IsNoise exactly, to lock behavior parity.
+/* old* replicate the pre-optimization IsSecret/IsNoise exactly, to lock behavior parity. */
 var oldSecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`/\.aws/(credentials|config)$`),
 	regexp.MustCompile(`/\.ssh/(id_[^/]+|authorized_keys)$`),

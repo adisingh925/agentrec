@@ -5,8 +5,7 @@ import (
 	"sync"
 )
 
-// Call is one agent tool call: the declared intent, plus everything the kernel saw while
-// it was in flight.
+/* Call is one agent tool call: the declared intent plus everything the kernel saw in flight. */
 type Call struct {
 	Seq    uint64  `json:"seq"`
 	Label  string  `json:"label"`
@@ -15,18 +14,17 @@ type Call struct {
 	Events []Event `json:"events"`
 }
 
-// Proc is a process observed inside a call.
+/* Proc is a process observed inside a call. */
 type Proc struct {
 	Pid    uint32
 	Ppid   uint32
 	Comm   string
-	Cmd    string // resolved from the exec event, when there was one
+	Cmd    string /* resolved from the exec event, when there was one */
 	First  float64
 	Events []Event
 }
 
-// Session accumulates a whole recording. Safe for concurrent use: the ring buffer reader
-// appends while the control socket adds marks.
+/* Session accumulates a whole recording. Safe for concurrent use. */
 type Session struct {
 	mu        sync.Mutex
 	ID        uint64
@@ -45,7 +43,7 @@ func NewSession(id uint64, name string) *Session {
 	return s
 }
 
-// Add records one decoded event, stamping it relative to the first event seen.
+/* Add records one decoded event, stamping it relative to the first event seen. */
 func (s *Session) Add(e Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -65,8 +63,7 @@ func (s *Session) Add(e Event) {
 	}
 }
 
-// Mark opens a new tool call. Called from the control socket when the agent (or a hook)
-// declares what it is about to do.
+/* Mark opens a new tool call when the agent declares what it is about to do. */
 func (s *Session) Mark(seq uint64, label string, at float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -87,7 +84,7 @@ func (s *Session) ensureCall(seq uint64, label string, at float64) *Call {
 func (s *Session) Calls() []*Call {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// order is appended unsorted on the hot path; sort once here at read time.
+	/* order is appended unsorted on the hot path; sort once at read time. */
 	sort.Slice(s.order, func(i, j int) bool { return s.order[i] < s.order[j] })
 	out := make([]*Call, 0, len(s.order))
 	for _, seq := range s.order {
@@ -110,7 +107,7 @@ func (s *Session) Len() int {
 	return len(s.events)
 }
 
-// Duration is the span from the first to the last observed event.
+/* Duration is the span from the first to the last observed event. */
 func (s *Session) Duration() float64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -120,16 +117,12 @@ func (s *Session) Duration() float64 {
 	return s.events[len(s.events)-1].Rel
 }
 
-// Procs groups a call's events into the processes that produced them, preserving the order
-// in which the processes first appeared. Attribution to a process uses tid, so a threaded
-// runtime's worker threads roll up under the thread that did the work.
+/* Procs groups a call's events by producing process, in first-seen order. */
 func (c *Call) Procs() []*Proc {
 	byPid := map[uint32]*Proc{}
 	var order []uint32
 
-	// Keyed by tgid, not tid: a resolver thread inside curl is part of curl, not a
-	// separate process. Thread-creation forks still arrive keyed by the new tid and
-	// produce an entry with no events, which the renderer drops.
+	/* Keyed by tgid, not tid, so a runtime's worker threads roll up under their process. */
 	get := func(e Event) *Proc {
 		p, ok := byPid[e.Pid]
 		if !ok {
@@ -142,7 +135,7 @@ func (c *Call) Procs() []*Proc {
 
 	for _, e := range c.Events {
 		if e.IsRecorderItself() {
-			continue // never record the recorder
+			continue /* never record the recorder */
 		}
 		p := get(e)
 		switch e.Type {
@@ -151,12 +144,11 @@ func (c *Call) Procs() []*Proc {
 				p.Ppid = e.Ppid
 			}
 		case "exec":
-			// A process can exec more than once (shell -> binary); the last one wins as
-			// the label, but every exec stays in the event list.
+			/* A process can exec more than once; the last wins as the label, all are kept. */
 			p.Cmd = e.CommandLine()
 			p.Events = append(p.Events, e)
 		case "exit":
-			// Nothing to show; the process's presence is already established.
+			/* Nothing to show; the process is already established. */
 		default:
 			p.Events = append(p.Events, e)
 		}

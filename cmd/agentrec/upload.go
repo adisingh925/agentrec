@@ -18,8 +18,7 @@ import (
 	"agentrec/internal/record"
 )
 
-// recordingDoc is the wire format the ingest API expects: the session plus its tool calls.
-// Shared by --out (writeJSON) and the uploader so the two can never drift.
+/* recordingDoc is the ingest API wire format: a session plus its tool calls. */
 type recordingDoc struct {
 	Session  string         `json:"session"`
 	ID       uint64         `json:"session_id"`
@@ -32,7 +31,7 @@ func sessionDoc(s *record.Session) recordingDoc {
 	return recordingDoc{s.Name, s.ID, s.RootPid, s.Duration(), s.Calls()}
 }
 
-// ingestResponse is the subset of the API reply we surface to the operator.
+/* ingestResponse is the subset of the API reply we surface to the operator. */
 type ingestResponse struct {
 	SessionID    string `json:"session_id"`
 	Queued       bool   `json:"queued"`
@@ -42,8 +41,7 @@ type ingestResponse struct {
 	Error        string `json:"error"`
 }
 
-// resolveTarget fills endpoint/token from flags, falling back to the environment. This is
-// how a DaemonSet or CI step configures the agent without touching the command line.
+/* resolveTarget fills endpoint/token from flags, falling back to the environment. */
 func resolveTarget(endpoint, token string) (string, string) {
 	if endpoint == "" {
 		endpoint = os.Getenv("AGENTREC_ENDPOINT")
@@ -54,9 +52,7 @@ func resolveTarget(endpoint, token string) (string, string) {
 	return strings.TrimRight(endpoint, "/"), token
 }
 
-// uploadRecording ships one recording to <endpoint>/v1/ingest, retrying transient failures.
-// Uploads are best-effort by design: a recorder should never fail a run because the control
-// plane was briefly unreachable.
+/* uploadRecording ships one recording to <endpoint>/v1/ingest, retrying transient failures. */
 func uploadRecording(endpoint, token string, body []byte) error {
 	if endpoint == "" || token == "" {
 		return errors.New("endpoint and token are both required (flags or AGENTREC_ENDPOINT / AGENTREC_TOKEN)")
@@ -108,8 +104,7 @@ func uploadRecording(endpoint, token string, body []byte) error {
 	return fmt.Errorf("upload failed after 3 attempts: %w", lastErr)
 }
 
-// enforceRulesResp is the control plane's view of the enforceable block rules for this token's
-// workspace. `version` changes whenever the rule set does, so the agent can skip re-applying.
+/* enforceRulesResp is the control plane's enforceable block rules for this token's workspace. */
 type enforceRulesResp struct {
 	Version   string `json:"version"`
 	Total     int    `json:"total"`
@@ -121,10 +116,7 @@ type enforceRulesResp struct {
 	} `json:"rules"`
 }
 
-// fetchBlockRules pulls the workspace's enforceable block rules from the control plane and maps
-// them into the kernel's numeric form. It returns the set's version so callers can skip no-op
-// reloads. The server only emits enforceable (event, op) combinations; anything unexpected here
-// is dropped defensively.
+/* fetchBlockRules pulls the workspace's block rules, maps them to kernel form, and returns the set version. */
 func fetchBlockRules(endpoint, token string) (string, []probe.BlockRule, error) {
 	if endpoint == "" || token == "" {
 		return "", nil, errors.New("endpoint and token are required")
@@ -166,8 +158,7 @@ func fetchBlockRules(endpoint, token string) (string, []probe.BlockRule, error) 
 	return er.Version, out, nil
 }
 
-// cmdPush uploads a recording that already exists on disk (or arrives on stdin) — the
-// building block for shipping recordings a node collected while offline.
+/* cmdPush uploads a recording from disk or stdin. */
 func cmdPush(argv []string) error {
 	fs := flag.NewFlagSet("push", flag.ContinueOnError)
 	endpoint := fs.String("endpoint", "", "ingest endpoint base URL (or AGENTREC_ENDPOINT)")
@@ -193,9 +184,7 @@ func cmdPush(argv []string) error {
 	return uploadRecording(ep, tok, body)
 }
 
-// nodeID returns a stable, non-reversible identifier for this host, used to meter node-hours
-// for billing. Derived from /etc/machine-id (falls back to the hostname), hashed so the raw
-// machine id / hostname never leaves the node.
+/* nodeID returns a stable, hashed (non-reversible) identifier for this host, used to meter node-hours. */
 func nodeID() string {
 	seed := ""
 	if b, err := os.ReadFile("/etc/machine-id"); err == nil {
@@ -213,19 +202,14 @@ func nodeID() string {
 	return hex.EncodeToString(h[:8])
 }
 
-// nodeCred is this node's attestation state. secret is the server-issued node_secret; when it is
-// empty the node is unregistered and heartbeats fall back to a legacy (unattested) node_id-only
-// ping. Mutated only from the single heartbeat goroutine, so it needs no lock.
+/* nodeCred is this node's attestation state; mutated only from the heartbeat goroutine, so no lock. */
 type nodeCred struct {
-	fp     string // stable fingerprint sent to /v1/nodes/register (the hashed machine id)
-	nodeID string // server-issued node_… id; empty until registered
-	secret string // server-issued node_secret; empty => not yet registered (registered lazily before a heartbeat)
+	fp     string /* stable fingerprint (hashed machine id) sent to /v1/nodes/register */
+	nodeID string /* server-issued node_… id; empty until registered */
+	secret string /* server-issued node_secret; empty => not yet registered */
 }
 
-// registerNode obtains (or refreshes) this node's attestation credential from the control plane.
-// Registration is idempotent per (workspace, fingerprint): a restart reuses the same node_id and
-// just rotates the secret. Returns an error on any transport failure or non-201 so callers can
-// fall back to a legacy unattested heartbeat against an older/unreachable control plane.
+/* registerNode obtains or refreshes this node's attestation credential; idempotent per (workspace, fingerprint). */
 func registerNode(endpoint, token, fingerprint string) (nodeID, secret string, err error) {
 	hostname, _ := os.Hostname()
 	reqBody, _ := json.Marshal(map[string]string{"fingerprint": fingerprint, "hostname": hostname})
@@ -257,8 +241,7 @@ func registerNode(endpoint, token, fingerprint string) (nodeID, secret string, e
 	return out.NodeID, out.NodeSecret, nil
 }
 
-// postHeartbeat sends one attested heartbeat (node_id+node_secret) and returns the HTTP status
-// (0 on transport error). Best-effort; never blocks the recording.
+/* postHeartbeat sends one attested heartbeat and returns the HTTP status (0 on transport error). */
 func postHeartbeat(endpoint, token string, cred *nodeCred) int {
 	body, _ := json.Marshal(map[string]string{"node_id": cred.nodeID, "node_secret": cred.secret})
 	req, err := http.NewRequest(http.MethodPost, endpoint+"/v1/heartbeat", bytes.NewReader(body))
@@ -276,11 +259,7 @@ func postHeartbeat(endpoint, token string, cred *nodeCred) int {
 	return resp.StatusCode
 }
 
-// sendHeartbeat marks this node active for the current clock hour. The control plane requires an
-// attested credential, so if we don't have one yet (initial registration failed, e.g. a transient
-// blip) we retry registration and skip this tick if it still fails — an unattested node can't be
-// metered anyway. A 401 with a credential means the secret was revoked/rotated (e.g. the control
-// plane was wiped); we re-register once and retry, self-healing without a restart.
+/* sendHeartbeat marks this node active, registering lazily and re-registering once on a 401. */
 func sendHeartbeat(endpoint, token string, cred *nodeCred) {
 	if endpoint == "" || token == "" {
 		return
@@ -300,10 +279,7 @@ func sendHeartbeat(endpoint, token string, cred *nodeCred) {
 	}
 }
 
-// startHeartbeat pings /v1/heartbeat immediately and every 5 minutes until stop is closed, so the
-// workspace's node-hours are metered for usage-based billing. Registration happens lazily on the
-// first ping and is retried on later pings until it succeeds. No-op without an endpoint/token; runs
-// in its own goroutine and never blocks or fails the recording.
+/* startHeartbeat pings /v1/heartbeat immediately and every 5 minutes until stop is closed. */
 func startHeartbeat(endpoint, token string, stop <-chan struct{}) {
 	endpoint, token = resolveTarget(endpoint, token)
 	if endpoint == "" || token == "" {

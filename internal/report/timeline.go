@@ -14,10 +14,10 @@ import (
 )
 
 type Options struct {
-	All     bool // include linker/libc noise
-	Resolve bool // reverse-DNS network destinations
+	All     bool /* include linker/libc noise */
+	Resolve bool /* reverse-DNS network destinations */
 	Color   bool
-	Enforce string // enforcement mode in effect ("lsm" | "off"); sharpens the BLOCKED label
+	Enforce string /* enforcement mode ("lsm" | "off"); sharpens the BLOCKED label */
 }
 
 type finding struct {
@@ -27,8 +27,7 @@ type finding struct {
 	call   string
 }
 
-// Render writes the human-facing recording: a timeline grouped by tool call, then the
-// findings that a security reviewer actually cares about.
+/* Render writes the human-facing recording: a timeline grouped by tool call, then the findings. */
 func Render(w io.Writer, s *record.Session, opts Options) {
 	c := palette(opts.Color)
 	res := newResolver(opts.Resolve)
@@ -53,8 +52,7 @@ func Render(w io.Writer, s *record.Session, opts Options) {
 		if !shown {
 			continue
 		}
-		// The agent surfaces only what enforcement actually denied in-kernel (the workspace's
-		// block rules). Detection findings are computed by the control plane, not the agent.
+		/* The agent surfaces only what enforcement denied in-kernel; detection findings are computed by the control plane. */
 		for _, e := range call.Events {
 			if e.Blocked {
 				findings = append(findings, finding{
@@ -84,7 +82,7 @@ func callName(call *record.Call) string {
 func renderCall(w io.Writer, call *record.Call, opts Options, c colors, res *resolver) bool {
 	procs := call.Procs()
 
-	// Decide what survives filtering before printing anything, so empty calls stay quiet.
+	/* Filter before printing, so empty calls stay quiet. */
 	type shownProc struct {
 		p      *record.Proc
 		events []record.Event
@@ -94,7 +92,7 @@ func renderCall(w io.Writer, call *record.Call, opts Options, c colors, res *res
 		var evs []record.Event
 		for _, e := range p.Events {
 			if e.Type == "exec" {
-				continue // rendered as the process label
+				continue /* rendered as the process label */
 			}
 			if !opts.All && !record.Interesting(e) {
 				continue
@@ -128,8 +126,7 @@ func renderCall(w io.Writer, call *record.Call, opts Options, c colors, res *res
 
 		title := sp.p.Cmd
 		if title == "" {
-			// No exec of its own: a shell running builtins, or a process we started
-			// watching mid-life.
+			/* No exec of its own: a shell running builtins, or a process watched mid-life. */
 			title = sp.p.Comm
 		}
 		fmt.Fprintf(w, "  %s %s%s%s %spid %d%s\n",
@@ -141,7 +138,7 @@ func renderCall(w io.Writer, call *record.Call, opts Options, c colors, res *res
 			tail := ""
 			if e.Blocked {
 				mark, col = "x", c.red
-				// Blocked events come from the BPF-LSM hooks denying a custom rule with -EPERM.
+				/* Blocked events come from BPF-LSM hooks denying with -EPERM. */
 				if opts.Enforce == "lsm" {
 					tail = c.red + "  <- BLOCKED (denied, -EPERM)" + c.reset
 				} else {
@@ -243,8 +240,7 @@ func describe(e record.Event, res *resolver) string {
 	return e.Type
 }
 
-// resolver does best-effort, short-timeout reverse DNS so destinations read as names
-// rather than anonymous IPs. Cached, and never blocks rendering for long.
+/* resolver does cached, short-timeout reverse DNS so destinations read as names rather than IPs. */
 type resolver struct {
 	on    bool
 	mu    sync.Mutex

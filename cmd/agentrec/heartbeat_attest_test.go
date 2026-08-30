@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// decodeBody reads a JSON request body into a map for assertions.
+/* decodeBody reads a JSON request body into a map for assertions. */
 func decodeBody(t *testing.T, r *http.Request) map[string]any {
 	t.Helper()
 	var m map[string]any
@@ -17,8 +17,7 @@ func decodeBody(t *testing.T, r *http.Request) map[string]any {
 	return m
 }
 
-// TestRegisterNode: registerNode POSTs {fingerprint, hostname} to /v1/nodes/register with the
-// bearer token and parses node_id/node_secret from a 201.
+/* TestRegisterNode: registerNode POSTs fingerprint+hostname and parses node_id/node_secret from a 201. */
 func TestRegisterNode(t *testing.T) {
 	var gotPath, gotAuth, gotFP string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +46,7 @@ func TestRegisterNode(t *testing.T) {
 	}
 }
 
-// registerNode surfaces a non-201 as an error so the caller skips the heartbeat and retries later.
+/* registerNode surfaces a non-201 as an error so the caller skips the heartbeat and retries later. */
 func TestRegisterNodeNon201(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -58,8 +57,7 @@ func TestRegisterNodeNon201(t *testing.T) {
 	}
 }
 
-// TestSendHeartbeatAttested: with a credential already in hand, the heartbeat carries
-// node_id+node_secret and no re-registration happens.
+/* TestSendHeartbeatAttested: an already-credentialed node sends an attested ping without re-registering. */
 func TestSendHeartbeatAttested(t *testing.T) {
 	var body map[string]any
 	var registers int
@@ -81,8 +79,7 @@ func TestSendHeartbeatAttested(t *testing.T) {
 	}
 }
 
-// TestSendHeartbeatRegistersWhenUncredentialed: an uncredentialed node registers lazily on its
-// first heartbeat, stores the credential, and sends an attested ping.
+/* TestSendHeartbeatRegistersWhenUncredentialed: an uncredentialed node registers lazily, stores the credential, and sends an attested ping. */
 func TestSendHeartbeatRegistersWhenUncredentialed(t *testing.T) {
 	var registers int
 	var hbBody map[string]any
@@ -114,8 +111,7 @@ func TestSendHeartbeatRegistersWhenUncredentialed(t *testing.T) {
 	}
 }
 
-// TestSendHeartbeatSkipsWhenRegisterFails: if registration fails while uncredentialed, NO heartbeat
-// is sent — an unattested node can't be metered, so the tick is skipped and retried next time.
+/* TestSendHeartbeatSkipsWhenRegisterFails: a failed registration skips the heartbeat entirely. */
 func TestSendHeartbeatSkipsWhenRegisterFails(t *testing.T) {
 	var registers, heartbeats int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -138,8 +134,7 @@ func TestSendHeartbeatSkipsWhenRegisterFails(t *testing.T) {
 	}
 }
 
-// TestSendHeartbeat401Reregister: a 401 while attested (secret revoked/rotated, e.g. control plane
-// wiped) triggers a single re-register and retry, and the credential is refreshed in place.
+/* TestSendHeartbeat401Reregister: a 401 triggers a single re-register and retry, refreshing the credential in place. */
 func TestSendHeartbeat401Reregister(t *testing.T) {
 	var heartbeats, registers int
 	var retryBody map[string]any
@@ -148,7 +143,7 @@ func TestSendHeartbeat401Reregister(t *testing.T) {
 		case "/v1/heartbeat":
 			heartbeats++
 			if heartbeats == 1 {
-				w.WriteHeader(http.StatusUnauthorized) // stale secret
+				w.WriteHeader(http.StatusUnauthorized) /* stale secret */
 				return
 			}
 			retryBody = decodeBody(t, r)

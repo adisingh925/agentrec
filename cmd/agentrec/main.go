@@ -1,8 +1,4 @@
-// Command agentrec records what an AI agent's process tree actually did, at the syscall
-// level, attributed to the tool call that caused it.
-//
-//	agentrec trace --session demo -- ./agent.sh    # record a run
-//	agentrec mark "bash: npm install"              # declare intent (called by the agent/hook)
+/* Command agentrec records an AI agent's process tree at the syscall level, attributed to the tool call that caused it. */
 package main
 
 import (
@@ -30,8 +26,7 @@ import (
 
 const defaultSock = "/run/agentrec.sock"
 
-// Compile-time proof that the hand-written decoder in internal/record matches the struct
-// layout the probe actually emits. If the C struct changes, this fails to build.
+/* Compile-time check that the record decoder matches the probe's struct layout. */
 var _ = [1]struct{}{}[probe.EventSize-record.RawEventSize]
 
 func main() {
@@ -94,9 +89,7 @@ push flags:
 `)
 }
 
-// pollBlockRules refreshes the in-kernel dynamic policy every 30s while a recording runs,
-// starting from the version already applied by the initial synchronous load. A transient
-// control-plane error leaves the last-known rules in force rather than dropping enforcement.
+/* pollBlockRules refreshes the in-kernel block rules every 30s; a fetch error keeps the last-known rules in force. */
 func pollBlockRules(p *probe.Probe, endpoint, token, cur string, stop <-chan struct{}) {
 	tk := time.NewTicker(30 * time.Second)
 	defer tk.Stop()
@@ -120,7 +113,7 @@ func pollBlockRules(p *probe.Probe, endpoint, token, cur string, stop <-chan str
 	}
 }
 
-// ---------- trace ----------
+/* ---------- trace ---------- */
 
 type tracer struct {
 	probe     *probe.Probe
@@ -129,7 +122,7 @@ type tracer struct {
 	rootPid   atomic.Uint32
 	seq       atomic.Uint64
 
-	// selfTesting diverts the event stream while we verify the pipeline end to end.
+	/* selfTesting diverts the event stream during the pipeline self-test. */
 	selfTesting  atomic.Bool
 	selfTestPath string
 	selfTestHit  chan struct{}
@@ -165,7 +158,7 @@ func cmdTrace(argv []string) error {
 	}
 	defer p.Close()
 
-	// Meter node-hours for billing for the duration of this recording.
+	/* Meter node-hours for billing while recording. */
 	hbStop := make(chan struct{})
 	defer close(hbStop)
 	if !*noUpload {
@@ -200,7 +193,7 @@ func cmdTrace(argv []string) error {
 	}()
 	go t.serveControl(ln)
 
-	// Ring buffer consumer. Runs until Close() unblocks it.
+	/* Ring buffer consumer; runs until Close() unblocks it. */
 	readerDone := make(chan struct{})
 	go func() {
 		defer close(readerDone)
@@ -227,7 +220,7 @@ func cmdTrace(argv []string) error {
 					default:
 					}
 				}
-				continue // self-test traffic is not part of the recording
+				continue /* self-test traffic is not recorded */
 			}
 			t.session.Add(e)
 		}
@@ -237,10 +230,7 @@ func cmdTrace(argv []string) error {
 		return err
 	}
 
-	// Dynamic policy: mirror the workspace's "block" rules into the kernel before the workload
-	// starts, then keep them fresh. Enforcement is BPF-LSM only (the hooks are the sole path
-	// that denies), so this runs only when enfMode == "lsm" and an endpoint is configured.
-	// Best-effort: a control-plane hiccup leaves the last-known rules in force.
+	/* Load the workspace's block rules into the kernel and keep them fresh; BPF-LSM only, best-effort. */
 	pollStop := make(chan struct{})
 	defer close(pollStop)
 	if *enforce && enfMode == "lsm" {
@@ -278,7 +268,7 @@ func cmdTrace(argv []string) error {
 		return err
 	}
 
-	// Let the tail of the process tree exit and the reader drain.
+	/* Let the process tree exit and the reader drain. */
 	time.Sleep(400 * time.Millisecond)
 	p.Reader.Close()
 	<-readerDone
@@ -307,8 +297,7 @@ func cmdTrace(argv []string) error {
 		}
 	}
 
-	// Auto-upload: the DaemonSet / CI path. Best-effort — a control-plane hiccup must not
-	// fail the recorded workload, so upload errors are logged, not returned.
+	/* Auto-upload, best-effort: upload errors are logged, not returned. */
 	if ep, tok := resolveTarget(*endpoint, *token); ep != "" && tok != "" && !*noUpload {
 		body, mErr := json.Marshal(sessionDoc(t.session))
 		if mErr != nil {
@@ -324,13 +313,7 @@ func cmdTrace(argv []string) error {
 	return nil
 }
 
-// selfTest proves the whole path works before we record anything real: tag our own pid,
-// make one syscall we can recognise, and require it to come back through the ring buffer.
-//
-// The failure it exists to catch is pid namespaces. bpf_get_current_pid_tgid() returns
-// init-namespace pids, so a collector inside its own pid namespace tags pids the kernel has
-// never heard of and records absolutely nothing -- attaching cleanly the whole time. Without
-// this check that looks like "the agent did nothing".
+/* selfTest tags our own pid and requires the syscall back through the ring buffer, catching a pid-namespace mismatch that would otherwise silently record nothing. */
 func (t *tracer) selfTest() error {
 	self := uint32(os.Getpid())
 	t.selfTestPath = fmt.Sprintf("/agentrec-selftest-%d", self)
@@ -343,7 +326,7 @@ func (t *tracer) selfTest() error {
 	}
 	defer t.probe.Untag(self)
 
-	// Expected to fail with ENOENT; the tracepoint fires on syscall entry regardless.
+	/* Expected to fail with ENOENT; the tracepoint fires on entry regardless. */
 	f, err := os.Open(t.selfTestPath)
 	if err == nil {
 		f.Close()
@@ -365,9 +348,7 @@ host pid namespace:
 	}
 }
 
-// runTarget launches the command through a stub that blocks until we have tagged it, so
-// the tag is in the kernel before the target's own execve. Without this handshake the first
-// tool call's exec would race the tag and go unattributed.
+/* runTarget launches the command via a stub that blocks until tagged, so the tag lands before the target's execve. */
 func (t *tracer) runTarget(cmdArgs []string, sock string) (int, error) {
 	self, err := os.Executable()
 	if err != nil {
@@ -398,7 +379,7 @@ func (t *tracer) runTarget(cmdArgs []string, sock string) (int, error) {
 		return 0, fmt.Errorf("tagging root pid %d: %w", pid, err)
 	}
 
-	// Tag is live: release the stub.
+	/* Tag is live; release the stub. */
 	if _, err := gateW.Write([]byte{1}); err != nil {
 		return 0, fmt.Errorf("releasing stub: %w", err)
 	}
@@ -420,7 +401,7 @@ func (t *tracer) runTarget(cmdArgs []string, sock string) (int, error) {
 	return 0, err
 }
 
-// ---------- control socket ----------
+/* ---------- control socket ---------- */
 
 type markRequest struct {
 	Cmd   string `json:"cmd"`
@@ -439,7 +420,7 @@ func listenControl(path string) (*net.UnixListener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("control socket %s: %w", path, err)
 	}
-	// The agent runs as whatever user it runs as; let it mark.
+	/* World-writable so the agent can mark regardless of its user. */
 	if err := os.Chmod(path, 0o666); err != nil {
 		ln.Close()
 		return nil, err
@@ -479,11 +460,7 @@ func (t *tracer) handleControl(conn *net.UnixConn) {
 	json.NewEncoder(conn).Encode(markResponse{Seq: seq, Retagged: retagged})
 }
 
-// advance moves the caller's process tree onto a new tool call. It walks up from the
-// caller's parent -- the caller itself is a short-lived hook process, while its parent is
-// the agent that will spawn the actual work -- and retags every tagged ancestor, so any
-// process that forks after this point inherits the new call. The root is always advanced so
-// a mark from an untracked helper still moves the recording forward.
+/* advance retags the caller's tagged ancestors (and always the root) onto the new tool call so later forks inherit it. */
 func (t *tracer) advance(peer uint32, seq uint64) []uint32 {
 	tag := probe.Tag{SessionID: t.sessionID, CallSeq: seq}
 	var updated []uint32
@@ -533,8 +510,7 @@ func peerPID(conn *net.UnixConn) (uint32, error) {
 	return pid, inner
 }
 
-// ppidOf reads the parent pid out of /proc/<pid>/stat. The comm field can contain spaces
-// and parentheses, so parsing starts after the final ')'.
+/* ppidOf reads the parent pid from /proc/<pid>/stat, parsing after the final ')' to skip the comm field. */
 func ppidOf(pid uint32) uint32 {
 	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
@@ -564,7 +540,7 @@ func contains(xs []uint32, x uint32) bool {
 	return false
 }
 
-// ---------- mark ----------
+/* ---------- mark ---------- */
 
 func cmdMark(argv []string) error {
 	if len(argv) == 0 {
@@ -579,7 +555,7 @@ func cmdMark(argv []string) error {
 
 	conn, err := net.DialTimeout("unix", path, 2*time.Second)
 	if err != nil {
-		// Marking is advisory: an agent should not fail because nothing is recording.
+		/* Marking is advisory; don't fail when nothing is recording. */
 		fmt.Fprintf(os.Stderr, "agentrec: no recorder at %s (%v); mark ignored\n", path, err)
 		return nil
 	}
@@ -600,10 +576,9 @@ func cmdMark(argv []string) error {
 	return nil
 }
 
-// ---------- stub ----------
+/* ---------- stub ---------- */
 
-// cmdStub is the pre-exec gate. It inherits fd 3, blocks for one byte, then replaces itself
-// with the target. Everything it does before exec happens while already tagged.
+/* cmdStub is the pre-exec gate: it blocks on fd 3 for one byte, then execs the target while already tagged. */
 func cmdStub(argv []string) error {
 	cmdArgs, _ := splitDoubleDash(argv)
 	if len(cmdArgs) == 0 {
@@ -613,7 +588,7 @@ func cmdStub(argv []string) error {
 	gate := os.NewFile(3, "agentrec-gate")
 	if gate != nil {
 		buf := make([]byte, 1)
-		gate.Read(buf) // a closed pipe is fine: proceed either way
+		gate.Read(buf) /* a closed pipe is fine; proceed either way */
 		gate.Close()
 	}
 
@@ -624,7 +599,7 @@ func cmdStub(argv []string) error {
 	return syscall.Exec(bin, cmdArgs, os.Environ())
 }
 
-// ---------- info ----------
+/* ---------- info ---------- */
 
 func cmdInfo() error {
 	fmt.Printf("kernel:   %s\n", probe.KernelHint())
@@ -645,9 +620,9 @@ func cmdInfo() error {
 	return nil
 }
 
-// ---------- helpers ----------
+/* ---------- helpers ---------- */
 
-// splitDoubleDash returns (args after "--", args before it).
+/* splitDoubleDash returns (args after "--", args before it). */
 func splitDoubleDash(argv []string) (after, before []string) {
 	for i, a := range argv {
 		if a == "--" {
