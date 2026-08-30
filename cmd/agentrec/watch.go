@@ -75,7 +75,7 @@ func cmdWatch(argv []string) error {
 
 	var mu sync.Mutex
 	cur := record.NewSession(sessionID, *name)
-	tagged := make(map[uint32]bool) /* adopted pids */
+	tagged := tagSet{} /* adopted pids; pruned on exit so the set stays bounded */
 
 	readerDone := make(chan struct{})
 	go func() {
@@ -94,12 +94,12 @@ func cmdWatch(argv []string) error {
 			if err != nil {
 				continue
 			}
-			/* exec of an untagged pid: adopt on a match. */
-			if e.Type == "exec" && !tagged[e.Pid] {
-				if !matchWatch(e, patterns) {
-					continue
-				}
-				tagged[e.Pid] = true
+			/* Maintain the adopted-pid set and decide what to do with this event. */
+			d := tagged.decide(e, patterns)
+			if d.skip {
+				continue /* an untagged exec matching no pattern: discovery noise, not recorded */
+			}
+			if d.tag {
 				_ = p.Tag(e.Pid, probe.Tag{SessionID: sessionID, CallSeq: uint64(e.Pid)})
 			}
 			mu.Lock()
@@ -147,6 +147,29 @@ func cmdWatch(argv []string) error {
 			flushFn()
 			return nil
 		}
+	}
+}
+
+/* tagSet is the watcher's set of adopted pids, kept in sync with the kernel's pid_tags: a pid is added on a matching exec and removed when it exits, so a recycled pid can be re-adopted and the set stays bounded over a long-running watch. */
+type tagSet map[uint32]bool
+
+/* watchDecision tells the consumer loop what to do with an event: skip recording it (an untagged exec matching no pattern), and/or issue a kernel Tag for e.Pid. */
+type watchDecision struct{ skip, tag bool }
+
+/* decide updates the adopted-pid set for one event and returns the action to take. */
+func (t tagSet) decide(e record.Event, patterns []string) watchDecision {
+	switch {
+	case e.Type == "exit":
+		delete(t, e.Pid) /* mirror the kernel's pid_tags cleanup so a recycled pid re-adopts */
+		return watchDecision{}
+	case e.Type == "exec" && !t[e.Pid]:
+		if !matchWatch(e, patterns) {
+			return watchDecision{skip: true}
+		}
+		t[e.Pid] = true
+		return watchDecision{tag: true}
+	default:
+		return watchDecision{}
 	}
 }
 
