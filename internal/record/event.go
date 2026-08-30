@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -154,10 +155,10 @@ func (d *Decoder) Decode(rec []byte) (Event, error) {
 			e.Dest = cstr(payload)
 		case 2:
 			e.Family = "ipv4"
-			e.Dest = net.JoinHostPort(net.IP(rec[64:68]).String(), fmt.Sprint(le.Uint32(rec[56:])))
+			e.Dest = net.JoinHostPort(net.IP(rec[64:68]).String(), strconv.Itoa(int(le.Uint32(rec[56:]))))
 		case 10:
 			e.Family = "ipv6"
-			e.Dest = net.JoinHostPort(net.IP(rec[64:80]).String(), fmt.Sprint(le.Uint32(rec[56:])))
+			e.Dest = net.JoinHostPort(net.IP(rec[64:80]).String(), strconv.Itoa(int(le.Uint32(rec[56:]))))
 		}
 	}
 	return e, nil

@@ -33,6 +33,20 @@ func Render(w io.Writer, s *record.Session, opts Options) {
 	res := newResolver(opts.Resolve)
 
 	calls := s.Calls()
+
+	/* Resolve every network destination concurrently up front so the serial render below never blocks on DNS one address at a time. */
+	if opts.Resolve {
+		var dests []string
+		for _, call := range calls {
+			for _, e := range call.Events {
+				if e.Type == "connect" && e.Family != "unix" && !e.IsRecorderItself() {
+					dests = append(dests, e.Dest)
+				}
+			}
+		}
+		res.warm(dests)
+	}
+
 	nCalls := 0
 	for _, call := range calls {
 		if call.Seq > 0 {
@@ -242,13 +256,64 @@ func describe(e record.Event, res *resolver) string {
 
 /* resolver does cached, short-timeout reverse DNS so destinations read as names rather than IPs. */
 type resolver struct {
-	on    bool
-	mu    sync.Mutex
-	cache map[string]string
+	on       bool
+	mu       sync.Mutex
+	cache    map[string]string
+	lookupFn func(host string) string /* reverseLookup by default; swapped in tests */
 }
 
 func newResolver(on bool) *resolver {
-	return &resolver{on: on, cache: map[string]string{}}
+	r := &resolver{on: on, cache: map[string]string{}}
+	r.lookupFn = reverseLookup
+	return r
+}
+
+/* reverseLookup does one short-timeout reverse-DNS query, returning "" when the host has no name. */
+func reverseLookup(host string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	var rr net.Resolver
+	if names, err := rr.LookupAddr(ctx, host); err == nil && len(names) > 0 {
+		return strings.TrimSuffix(names[0], ".")
+	}
+	return ""
+}
+
+/* warm reverse-resolves every distinct host concurrently and fills the cache, so label() never blocks the serial render on DNS one address at a time. */
+func (r *resolver) warm(hostports []string) {
+	if !r.on {
+		return
+	}
+	seen := map[string]bool{}
+	var hosts []string
+	r.mu.Lock()
+	for _, hp := range hostports {
+		host, _, err := net.SplitHostPort(hp)
+		if err != nil || seen[host] {
+			continue
+		}
+		seen[host] = true
+		if _, done := r.cache[host]; !done {
+			hosts = append(hosts, host)
+		}
+	}
+	r.mu.Unlock()
+
+	sem := make(chan struct{}, 16) /* bound concurrent lookups */
+	var wg sync.WaitGroup
+	for _, host := range hosts {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(host string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			name := r.lookupFn(host)
+			r.mu.Lock()
+			r.cache[host] = name
+			r.mu.Unlock()
+		}(host)
+	}
+	wg.Wait()
 }
 
 func (r *resolver) label(hostport string) string {
@@ -265,12 +330,7 @@ func (r *resolver) label(hostport string) string {
 	r.mu.Unlock()
 
 	if !ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-		defer cancel()
-		var rr net.Resolver
-		if names, err := rr.LookupAddr(ctx, host); err == nil && len(names) > 0 {
-			name = strings.TrimSuffix(names[0], ".")
-		}
+		name = r.lookupFn(host)
 		r.mu.Lock()
 		r.cache[host] = name
 		r.mu.Unlock()
