@@ -25,10 +25,14 @@ type recordingDoc struct {
 	RootPid  uint32         `json:"root_pid"`
 	Duration float64        `json:"duration_s"`
 	Calls    []*record.Call `json:"calls"`
+	// NodeFP is this host's stable fingerprint (same value sent to /v1/nodes/register).
+	// The server hashes it and resolves it to the attested node, so recordings can be
+	// filtered by node in the console. Works in both watch and trace modes.
+	NodeFP string `json:"node_fp,omitempty"`
 }
 
 func sessionDoc(s *record.Session) recordingDoc {
-	return recordingDoc{s.Name, s.ID, s.RootPid, s.Duration(), s.Calls()}
+	return recordingDoc{s.Name, s.ID, s.RootPid, s.Duration(), s.Calls(), nodeID()}
 }
 
 /* ingestResponse is the subset of the API reply we surface to the operator. */
