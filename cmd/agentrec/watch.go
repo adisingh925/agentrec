@@ -79,7 +79,44 @@ func cmdWatch(argv []string) error {
 	cur := record.NewSession(sessionID, *name)
 	tagged := tagSet{} /* adopted pids; pruned on exit so the set stays bounded */
 
-	flushNow := make(chan struct{}, 1) /* size-based flush signal from the reader */
+	/* Uploads run off the reader's hot path: a dedicated goroutine marshals + uploads each flushed
+	   session, then returns its pages to the OS. A small bounded queue backpressures if uploads fall
+	   behind (the enqueue blocks, the ring buffer absorbs, and only then are events dropped). */
+	uploadCh := make(chan *record.Session, 1)
+	var uploadWG sync.WaitGroup
+	uploadWG.Add(1)
+	go func() {
+		defer uploadWG.Done()
+		for s := range uploadCh {
+			if ep != "" && tok != "" {
+				if body, err := json.Marshal(sessionDoc(s)); err == nil {
+					if uErr := uploadRecording(ep, tok, body); uErr != nil {
+						fmt.Fprintf(os.Stderr, "agentrec: flush upload failed: %v\n", uErr)
+					}
+				}
+			} else {
+				report.Render(os.Stdout, s, report.Options{Resolve: !*noResolve, Color: !*noColor})
+			}
+			s = nil              /* release the flushed session... */
+			debug.FreeOSMemory() /* ...so its pages return to the OS, not just the Go heap */
+		}
+	}()
+
+	/* flush swaps in a fresh session and hands the old one to the uploader. The swap is instant (a
+	   pointer under lock), so the live session stays bounded to ~max-events even when the reader
+	   saturates the CPU -- no waiting on another goroutine to be scheduled before the session grows. */
+	doFlush := func() {
+		mu.Lock()
+		if cur.Len() == 0 {
+			mu.Unlock()
+			return
+		}
+		old := cur
+		cur = record.NewSession(uint64(time.Now().UnixNano()), *name)
+		mu.Unlock()
+		uploadCh <- old /* blocks only when the upload queue is full (backpressure) */
+	}
+
 	readerDone := make(chan struct{})
 	go func() {
 		defer close(readerDone)
@@ -110,39 +147,13 @@ func cmdWatch(argv []string) error {
 			over := *maxEvents > 0 && cur.Len() >= *maxEvents
 			mu.Unlock()
 			if over {
-				/* session hit the event cap: ask the main loop to flush now, without blocking the reader */
-				select {
-				case flushNow <- struct{}{}:
-				default:
-				}
+				doFlush() /* swap inline (instant), enqueue for async upload */
 			}
 		}
 	}()
 
 	fmt.Fprintf(os.Stderr, "agentrec: node-wide watch on %s; matching %v; flushing every %s\n",
 		probe.KernelHint(), patterns, *flush)
-
-	flushFn := func() {
-		mu.Lock()
-		s := cur
-		if s.Len() == 0 {
-			mu.Unlock()
-			return
-		}
-		cur = record.NewSession(uint64(time.Now().UnixNano()), *name)
-		mu.Unlock()
-		if ep != "" && tok != "" {
-			if body, err := json.Marshal(sessionDoc(s)); err == nil {
-				if uErr := uploadRecording(ep, tok, body); uErr != nil {
-					fmt.Fprintf(os.Stderr, "agentrec: flush upload failed: %v\n", uErr)
-				}
-			}
-		} else {
-			report.Render(os.Stdout, s, report.Options{Resolve: !*noResolve, Color: !*noColor})
-		}
-		s = nil              /* drop the flushed window so the GC can reclaim it */
-		debug.FreeOSMemory() /* hand the freed pages back to the OS so RSS actually drops, not just the Go heap */
-	}
 
 	ticker := time.NewTicker(*flush)
 	defer ticker.Stop()
@@ -152,14 +163,14 @@ func cmdWatch(argv []string) error {
 	for {
 		select {
 		case <-ticker.C:
-			flushFn()
-		case <-flushNow:
-			flushFn()
+			doFlush()
 		case <-sigc:
 			fmt.Fprintln(os.Stderr, "agentrec: stopping, final flush…")
 			p.Reader.Close()
 			<-readerDone
-			flushFn()
+			doFlush()       /* final swap + enqueue */
+			close(uploadCh) /* no more sessions; end the uploader's range */
+			uploadWG.Wait() /* let queued uploads finish before exit */
 			return nil
 		}
 	}
