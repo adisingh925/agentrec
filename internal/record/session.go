@@ -35,7 +35,6 @@ type Session struct {
 	events []Event
 	calls  map[uint64]*Call
 	order  []uint64
-	bytes  int /* running estimate of retained event bytes, for size-based flushing */
 }
 
 func NewSession(id uint64, name string) *Session {
@@ -62,23 +61,6 @@ func (s *Session) Add(e Event) {
 	if e.Rel > c.End {
 		c.End = e.Rel
 	}
-	s.bytes += eventSize(e)
-}
-
-/* Bytes is a running estimate of the memory this session's events retain, used to trigger a size-based flush before the interval elapses. */
-func (s *Session) Bytes() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.bytes
-}
-
-/* eventSize approximates the heap an event retains once stored: its struct is held in both the flat list and its call bucket (~2x), while string payloads are shared. A rough proxy, good enough to bound the buffer. */
-func eventSize(e Event) int {
-	n := 160 + len(e.Path) + len(e.Comm) + len(e.Dest) + len(e.Type) + len(e.Family)
-	for _, a := range e.Argv {
-		n += len(a) + 16
-	}
-	return n
 }
 
 /* Mark opens a new tool call when the agent declares what it is about to do. */
