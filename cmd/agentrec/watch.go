@@ -31,6 +31,7 @@ func cmdWatch(argv []string) error {
 	noResolve := fs.Bool("no-resolve", false, "skip reverse DNS")
 	noColor := fs.Bool("no-color", false, "plain output when printing locally")
 	foreground := fs.Bool("foreground", false, "run the watch loop in this terminal instead of installing a systemd service")
+	maxBuffer := fs.Int64("max-buffer-bytes", 64<<20, "flush early when the in-memory session's estimated event bytes reach this, bounding memory between flushes (0 = time-based flush only)")
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}
@@ -49,7 +50,7 @@ func cmdWatch(argv []string) error {
 	/* Run by hand as root on a systemd host: install a service instead of blocking. INVOCATION_ID means systemd already runs us. */
 	if !*foreground && os.Getenv("INVOCATION_ID") == "" && os.Geteuid() == 0 {
 		if _, err := exec.LookPath("systemctl"); err == nil {
-			return installWatchService(patterns, *flush, *name, ep, tok)
+			return installWatchService(patterns, *flush, *name, ep, tok, *maxBuffer)
 		}
 	}
 
@@ -77,6 +78,7 @@ func cmdWatch(argv []string) error {
 	cur := record.NewSession(sessionID, *name)
 	tagged := tagSet{} /* adopted pids; pruned on exit so the set stays bounded */
 
+	flushNow := make(chan struct{}, 1) /* size-based flush signal from the reader */
 	readerDone := make(chan struct{})
 	go func() {
 		defer close(readerDone)
@@ -104,7 +106,15 @@ func cmdWatch(argv []string) error {
 			}
 			mu.Lock()
 			cur.Add(e)
+			over := *maxBuffer > 0 && int64(cur.Bytes()) >= *maxBuffer
 			mu.Unlock()
+			if over {
+				/* session hit the buffer cap: ask the main loop to flush now, without blocking the reader */
+				select {
+				case flushNow <- struct{}{}:
+				default:
+				}
+			}
 		}
 	}()
 
@@ -139,6 +149,8 @@ func cmdWatch(argv []string) error {
 	for {
 		select {
 		case <-ticker.C:
+			flushFn()
+		case <-flushNow:
 			flushFn()
 		case <-sigc:
 			fmt.Fprintln(os.Stderr, "agentrec: stopping, final flush…")
@@ -222,7 +234,7 @@ func watchSelfTest(p *probe.Probe) error {
 }
 
 /* installWatchService writes and enables a systemd unit running "watch --foreground" for capture that survives reboots. */
-func installWatchService(patterns []string, flush time.Duration, session, endpoint, token string) error {
+func installWatchService(patterns []string, flush time.Duration, session, endpoint, token string, maxBuffer int64) error {
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locating agentrec binary: %w", err)
@@ -236,8 +248,8 @@ AGENTREC_TOKEN=%s
 			_ = os.WriteFile("/etc/agentrec/agent.env", []byte(env), 0o600)
 		}
 	}
-	execLine := fmt.Sprintf("%s watch --match %s --flush %s --session %s --foreground --no-color",
-		self, strings.Join(patterns, ","), flush, session)
+	execLine := fmt.Sprintf("%s watch --match %s --flush %s --session %s --max-buffer-bytes %d --foreground --no-color",
+		self, strings.Join(patterns, ","), flush, session, maxBuffer)
 	unit := fmt.Sprintf(`[Unit]
 Description=agentrec node-wide watch
 After=network-online.target
