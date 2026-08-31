@@ -32,9 +32,10 @@ type Session struct {
 	RootPid   uint32
 	startTsNs uint64
 
-	events []Event
-	calls  map[uint64]*Call
-	order  []uint64
+	calls   map[uint64]*Call
+	order   []uint64
+	count   int     /* total events added, for Len (events are stored once, per call) */
+	lastRel float64 /* Rel of the most recent event, for Duration */
 }
 
 func NewSession(id uint64, name string) *Session {
@@ -55,12 +56,13 @@ func (s *Session) Add(e Event) {
 		e.Rel = float64(e.Ts-s.startTsNs) / 1e9
 	}
 
-	s.events = append(s.events, e)
 	c := s.ensureCall(e.Call, "", e.Rel)
 	c.Events = append(c.Events, e)
 	if e.Rel > c.End {
 		c.End = e.Rel
 	}
+	s.count++
+	s.lastRel = e.Rel
 }
 
 /* Mark opens a new tool call when the agent declares what it is about to do. */
@@ -93,28 +95,29 @@ func (s *Session) Calls() []*Call {
 	return out
 }
 
+/* Events flattens all events (reconstructed from the per-call buckets, since events are stored once) into chronological order. Only the --jsonl export path needs the flat view. */
 func (s *Session) Events() []Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]Event, len(s.events))
-	copy(out, s.events)
+	out := make([]Event, 0, s.count)
+	for _, seq := range s.order {
+		out = append(out, s.calls[seq].Events...)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Ts < out[j].Ts })
 	return out
 }
 
 func (s *Session) Len() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.events)
+	return s.count
 }
 
-/* Duration is the span from the first to the last observed event. */
+/* Duration is the elapsed time to the most recently observed event. */
 func (s *Session) Duration() float64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.events) == 0 {
-		return 0
-	}
-	return s.events[len(s.events)-1].Rel
+	return s.lastRel
 }
 
 /* Procs groups a call's events by producing process, in first-seen order. */
