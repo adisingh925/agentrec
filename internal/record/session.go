@@ -3,6 +3,9 @@ package record
 import (
 	"sort"
 	"sync"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 /* Call is one agent tool call: the declared intent plus everything the kernel saw in flight. */
@@ -30,6 +33,11 @@ type Session struct {
 	ID        uint64
 	Name      string
 	RootPid   uint32
+	/* Wall-clock anchor: a paired CLOCK_REALTIME/CLOCK_MONOTONIC reading taken at session start.
+	   The probe stamps events with bpf_ktime_get_ns() (CLOCK_MONOTONIC), so any event's monotonic
+	   ts can be converted to exact wall-clock: wall = AnchorWallNs + (event.Ts - AnchorMonoNs). */
+	AnchorWallNs uint64
+	AnchorMonoNs uint64
 	startTsNs uint64
 
 	calls   map[uint64]*Call
@@ -40,8 +48,21 @@ type Session struct {
 
 func NewSession(id uint64, name string) *Session {
 	s := &Session{ID: id, Name: name, calls: map[uint64]*Call{}}
+	/* captured back-to-back so the pair corresponds to the same instant */
+	s.AnchorMonoNs = monotonicNs()
+	s.AnchorWallNs = uint64(time.Now().UnixNano())
 	s.ensureCall(0, "(session setup)", 0)
 	return s
+}
+
+/* monotonicNs reads CLOCK_MONOTONIC — the same clock bpf_ktime_get_ns() uses in the probe —
+   so it can be paired with a wall-clock reading to convert event timestamps to real time. */
+func monotonicNs() uint64 {
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		return 0
+	}
+	return uint64(ts.Sec)*1000000000 + uint64(ts.Nsec)
 }
 
 /* Add records one decoded event, stamping it relative to the first event seen. */

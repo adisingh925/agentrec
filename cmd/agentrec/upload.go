@@ -29,10 +29,14 @@ type recordingDoc struct {
 	   The server hashes it and resolves it to the attested node, so recordings can be
 	   filtered by node in the console. Works in both watch and trace modes. */
 	NodeFP string `json:"node_fp,omitempty"`
+	/* AnchorWallNs / AnchorMonoNs are a paired wall-clock/monotonic reading from session start.
+	   They let the console convert each event's monotonic ts_ns to exact wall-clock time. */
+	AnchorWallNs uint64 `json:"anchor_wall_ns,omitempty"`
+	AnchorMonoNs uint64 `json:"anchor_mono_ns,omitempty"`
 }
 
 func sessionDoc(s *record.Session) recordingDoc {
-	return recordingDoc{s.Name, s.ID, s.RootPid, s.Duration(), s.Calls(), nodeID()}
+	return recordingDoc{s.Name, s.ID, s.RootPid, s.Duration(), s.Calls(), nodeID(), s.AnchorWallNs, s.AnchorMonoNs}
 }
 
 /* ingestResponse is the subset of the API reply we surface to the operator. */
